@@ -18,6 +18,7 @@ from ..core import (
     ScanTarget,
     Severity,
     VulnType,
+    _next_finding_id,
 )
 
 
@@ -72,7 +73,7 @@ class XSSModule:
                 # Verify it's not just in a safe context (e.g., inside a textarea)
                 if not self._is_safe_context(response.body, payload):
                     evidence = Evidence(
-                        finding_id=f"EG-XSS-{hash(url) % 1000:03d}",
+                        finding_id=_next_finding_id("XSS"),
                         title=f"Reflected XSS via {param} parameter",
                         description=f"Parameter {param} at {url} reflects input without "
                                     f"HTML encoding. Payload: {payload}",

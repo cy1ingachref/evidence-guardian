@@ -38,6 +38,13 @@ class Scanner:
             llm_backend=self.llm.backend,
         )
 
+        # Validate target is in scope before starting
+        if not target.is_in_scope(target.url):
+            console.print(f"[red]Target {target.url} is not in scope![/red]")
+            result.end_time = time.time()
+            return result
+        redirect_client = httpx.Client(timeout=15.0, follow_redirects=False)
+        # All other modules can follow redirects normally
         client = httpx.Client(timeout=15.0, follow_redirects=True)
 
         # Initialize all modules
@@ -46,7 +53,7 @@ class Scanner:
             "idor": IDORModule(client=client),
             "xss": XSSModule(client=client),
             "sqli": SQLiModule(client=client),
-            "open_redirect": OpenRedirectModule(client=client),
+            "open_redirect": OpenRedirectModule(client=redirect_client),
         }
 
         with Progress(

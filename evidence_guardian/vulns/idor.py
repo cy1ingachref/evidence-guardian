@@ -93,7 +93,7 @@ class IDORModule:
                                 f"objects by changing the identifier from {base_id} to {next_id}.",
                     request=HttpRequest(method="GET", url=next_url),
                     response=resp_b,
-                    proof_script=self._generate_poc_script(path_template, base_id, next_id),
+                    proof_script=self._generate_poc_script(base_url, param_name, base_id, next_id),
                     metadata={"base_id": base_id, "next_id": next_id},
                 )
                 return Finding(
@@ -138,15 +138,17 @@ class IDORModule:
         return any(re.search(p, body) for p in patterns)
 
     @staticmethod
-    def _generate_poc_script(path_template: str, id_a: int, id_b: int) -> str:
+    def _generate_poc_script(base_url: str, param_name: str, id_a: int, id_b: int) -> str:
         return f"""#!/usr/bin/env python3
 \"\"\"IDOR PoC: Access another user's data by incrementing the ID.\"\"\"
 import requests
 
+# Use the full target URL
+base = "{base_url}"
 # Original resource (your own)
-url_a = "{path_template}".replace("{id}", "{id_a}")
+url_a = f"{{base}}/api/users/{id_a}"
 # Another user's resource
-url_b = "{path_template}".replace("{id}", "{id_b}")
+url_b = f"{{base}}/api/users/{id_b}"
 
 resp_a = requests.get(url_a)
 resp_b = requests.get(url_b)

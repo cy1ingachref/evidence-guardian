@@ -18,6 +18,7 @@ from ..core import (
     ScanTarget,
     Severity,
     VulnType,
+    _next_finding_id,
 )
 
 

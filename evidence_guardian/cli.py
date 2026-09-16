@@ -8,7 +8,7 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
-
+from . import __version__
 from .core import ScanTarget
 from .llm import LLMClient
 from .scanner import Scanner
@@ -18,7 +18,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="evidence-guardian")
+@click.version_option(version=__version__, prog_name="evidence-guardian")
 def cli():
     """EvidenceGuardian — AI security research with reproducible evidence.
 
@@ -130,7 +130,9 @@ def demo():
     import subprocess
     import time
 
-    demo_script = os.path.join(os.path.dirname(__file__), "..", "demo", "vulnerable_app.py")
+    # Use the packaged demo app (works after pip install)
+    demo_dir = os.path.join(os.path.dirname(__file__), "demo")
+    demo_script = os.path.join(demo_dir, "vulnerable_app.py")
     if not os.path.exists(demo_script):
         console.print(f"[red]Demo app not found at {demo_script}[/red]")
         sys.exit(1)

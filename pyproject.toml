@@ -44,7 +44,10 @@ evidence-guardian = "evidence_guardian.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["evidence_guardian*"]
-exclude = ["tests*", "demo*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+"evidence_guardian.demo" = ["*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

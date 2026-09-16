@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -15,10 +16,10 @@ from ..core import (
     Finding,
     HttpRequest,
     HttpResponse,
-    ScanResult,
     ScanTarget,
     Severity,
     VulnType,
+    _next_finding_id,
 )
 from ..llm import LLMClient
 
@@ -72,28 +73,29 @@ class SSRFModule:
         url = endpoint["url"]
         param = endpoint["param"]
 
-        # First, test with a benign external URL to see if the endpoint fetches
-        probe_url = "https://httpbin.org/get"
-        benign_response = self._try_fetch(url, param, probe_url)
+        # First, test with a benign URL to see if the endpoint fetches
+        # Use a non-external probe (avoids network dependency and privacy issues)
+        parsed_target = urlparse(target.url)
+        benign_url = f"{parsed_target.scheme}://{parsed_target.hostname}/"
+        benign_response = self._try_fetch(url, param, benign_url)
 
         if benign_response is None:
-            return None  # Endpoint doesn't appear to accept URL parameters
+            return None
 
         # Now test with internal addresses
         internal_probes = [
             "http://169.254.169.254/latest/meta-data/",  # AWS metadata
-            "http://127.0.0.1:80/",  # Localhost
-            "http://[::1]:80/",  # IPv6 localhost
+            "http://127.0.0.1/",  # Localhost
+            "http://[::1]/",  # IPv6 localhost
             "http://internal.local/",  # Internal DNS
         ]
 
         for internal_url in internal_probes:
             response = self._try_fetch(url, param, internal_url)
             if response is not None:
-                # Check if internal probe succeeded (would indicate SSRF)
                 if response.status_code == 200 and self._looks_like_internal_content(response):
                     evidence = Evidence(
-                        finding_id=f"EG-SSRF-{hash(url) % 1000:03d}",
+                        finding_id=_next_finding_id("SSRF"),
                         title=f"SSRF via {param} parameter",
                         description=f"Endpoint at {url} fetches user-supplied URLs and "
                                     f"successfully retrieved internal resource at {internal_url}",
@@ -114,17 +116,16 @@ class SSRFModule:
                         evidence=evidence,
                     )
 
-        # Even if internal fetch didn't work, the endpoint accepts external URLs
-        # (still a risk — server can be used as proxy for external requests)
+        # Even if internal fetch didn't work, the endpoint accepts arbitrary URLs
         if benign_response.status_code == 200:
             evidence = Evidence(
-                finding_id=f"EG-SSRF-{hash(url) % 1000:03d}",
+                finding_id=_next_finding_id("SSRF"),
                 title=f"Potential SSRF via {param} parameter",
                 description=f"Endpoint at {url} accepts arbitrary URLs for server-side fetching. "
-                            f"Returned {benign_response.status_code} for external URL.",
-                request=HttpRequest(method="GET", url=f"{url}?{param}={probe_url}"),
+                            f"Returned {benign_response.status_code} for benign URL.",
+                request=HttpRequest(method="GET", url=f"{url}?{param}={benign_url}"),
                 response=benign_response,
-                proof_script=self._generate_poc_script(url, param, probe_url),
+                proof_script=self._generate_poc_script(url, param, benign_url),
             )
             return Finding(
                 id=evidence.finding_id,
@@ -132,7 +133,7 @@ class SSRFModule:
                 severity=Severity.MEDIUM,
                 endpoint=url,
                 parameter=param,
-                summary=f"Endpoint fetches user-supplied URLs. External fetch returned {benign_response.status_code}.",
+                summary=f"Endpoint fetches user-supplied URLs. Benign fetch returned {benign_response.status_code}.",
                 confidence=0.72,
                 evidence=evidence,
             )

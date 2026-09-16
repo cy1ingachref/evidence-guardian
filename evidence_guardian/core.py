@@ -9,6 +9,21 @@ from typing import Any
 from urllib.parse import urlparse
 
 
+# Global counter for stable finding IDs
+_finding_counter = 0
+
+
+def _next_finding_id(prefix: str) -> str:
+    """Generate a stable, unique finding ID.
+    
+    Uses a global counter + timestamp to avoid Python's randomized hash().
+    """
+    global _finding_counter
+    _finding_counter += 1
+    ts = int(time.time() * 1000) % 100000
+    return f"EG-{prefix}-{ts:05d}-{_finding_counter:03d}"
+
+
 class Severity(str, Enum):
     CRITICAL = "critical"
     HIGH = "high"

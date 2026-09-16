@@ -30,14 +30,16 @@ def cli():
 @cli.command()
 @click.argument("url")
 @click.option("--scope", "-s", default="Default scope", help="Scope description for the scan")
-@click.option("--modules", "-m", default="ssrf,idor,xss,sqli,open_redirect,sensitive_data,misconfiguration,deep_exploit",
+@click.option("--modules", "-m", default="ssrf,idor,xss,sqli,open_redirect,sensitive_data,misconfiguration,deep_exploit,auth_scan,endpoint_discovery",
               help="Comma-separated list of modules to run")
+@click.option("--webhooks", "-w", default=None,
+              help="Comma-separated webhook URLs for notifications")
 @click.option("--output", "-o", default="reports", help="Output directory for reports")
 @click.option("--mock/--no-mock", default=None,
               help="Force mock LLM mode (no API key needed)")
 @click.option("--open/--no-open", "open_report", default=False,
               help="Open the HTML report after scan")
-def scan(url: str, scope: str, modules: str, output: str, mock: bool | None, open_report: bool):
+def scan(url: str, scope: str, modules: str, webhooks: str | None, output: str, mock: bool | None, open_report: bool):
     """Run a security scan against a target URL.
 
     Example:
@@ -91,6 +93,19 @@ def scan(url: str, scope: str, modules: str, output: str, mock: bool | None, ope
         reporter = HTMLReporter(output_dir=output)
         report_path = reporter.generate(result)
         console.print(f"[green]Report saved to: {report_path}[/green]")
+
+        # Send webhook notifications
+        if webhooks:
+            webhook_urls = [w.strip() for w in webhooks.split(",")]
+            notifier = WebhookNotifier(webhook_urls=webhook_urls)
+            webhook_results = notifier.notify(result)
+            for wr in webhook_results:
+                status = wr.get("status", "unknown")
+                url = wr.get("url", "?")
+                if str(status).startswith("2"):
+                    console.print(f"[dim]Webhook OK: {url}[/dim]")
+                else:
+                    console.print(f"[yellow]Webhook {status}: {url}[/yellow]")
 
         if open_report:
             import webbrowser

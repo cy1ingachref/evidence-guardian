@@ -19,6 +19,11 @@ from .vulns.open_redirect import OpenRedirectModule
 from .vulns.sensitive_data import SensitiveDataExposureModule
 from .vulns.misconfiguration import SecurityMisconfigurationModule
 from .vulns.deep_exploit import DeepExploitModule
+from .vulns.auth_scan import AuthScanModule
+from .vulns.endpoint_discovery import EndpointDiscoveryModule
+from .webhook import WebhookNotifier
+from .rate_limiter import DomainRateLimiter
+from .custom_module import get_registered_modules, create_module_instance
 
 console = Console()
 
@@ -32,7 +37,7 @@ class Scanner:
         modules: list[str] | None = None,
     ):
         self.llm = llm or LLMClient()
-        self.modules = modules or ["ssrf", "idor", "xss", "sqli", "open_redirect", "sensitive_data", "misconfiguration", "deep_exploit"]
+        self.modules = modules or ["ssrf", "idor", "xss", "sqli", "open_redirect", "sensitive_data", "misconfiguration", "deep_exploit", "auth_scan", "endpoint_discovery"]
 
     def scan(self, target: ScanTarget) -> ScanResult:
         """Run a full scan against the target."""
@@ -60,6 +65,8 @@ class Scanner:
             "sensitive_data": SensitiveDataExposureModule(client=client),
             "misconfiguration": SecurityMisconfigurationModule(client=client),
             "deep_exploit": DeepExploitModule(client=client),
+            "auth_scan": AuthScanModule(client=client),
+            "endpoint_discovery": EndpointDiscoveryModule(client=client),
         }
 
         with Progress(

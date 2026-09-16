@@ -2,6 +2,11 @@
 
 Finds endpoints where numeric/sequential identifiers can be manipulated
 to access other users' data.
+
+Detection strategy:
+1. Get baseline for first ID
+2. Request second ID (baseline + 1)
+3. Only flag if both return 200 with different content AND second looks like user data
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ from ..core import (
     ScanTarget,
     Severity,
     VulnType,
+    _next_finding_id,
 )
 
 
@@ -34,7 +40,7 @@ class IDORModule:
     def run(self, target: ScanTarget) -> list[Finding]:
         findings = []
 
-        # Common IDOR-prone endpoint patterns with numeric IDs
+        # IDOR-prone endpoint patterns with numeric IDs
         id_patterns = [
             ("/api/users/{id}", "user_id"),
             ("/api/accounts/{id}", "account_id"),
@@ -43,9 +49,18 @@ class IDORModule:
             ("/api/documents/{id}", "doc_id"),
             ("/api/v1/users/{id}", "user_id"),
             ("/api/v1/accounts/{id}", "account_id"),
+            # Juice Shop patterns
+            "/rest/basket/{id}",
+            "/rest/products/{id}",
         ]
 
-        for path_template, param_name in id_patterns:
+        for pattern in id_patterns:
+            if isinstance(pattern, tuple):
+                path_template, param_name = pattern
+            else:
+                path_template = pattern
+                param_name = "id"
+
             # Test with a range of IDs
             for base_id in [1, 2, 100, 999]:
                 path = path_template.replace("{id}", str(base_id))
@@ -87,13 +102,13 @@ class IDORModule:
             # Potential IDOR — different ID returned different data
             if self._looks_like_user_data(resp_b):
                 evidence = Evidence(
-                    finding_id=f"EG-IDOR-{hash(base_url) % 1000:03d}",
+                    finding_id=_next_finding_id("IDOR"),
                     title=f"IDOR via {param_name} manipulation",
                     description=f"Endpoint {path_template} allows access to other users' "
                                 f"objects by changing the identifier from {base_id} to {next_id}.",
                     request=HttpRequest(method="GET", url=next_url),
                     response=resp_b,
-                    proof_script=self._generate_poc_script(base_url, param_name, base_id, next_id),
+                    proof_script=self._generate_poc_script(target.url, param_name, base_id, next_id),
                     metadata={"base_id": base_id, "next_id": next_id},
                 )
                 return Finding(
@@ -134,26 +149,29 @@ class IDORModule:
             r'"email"\s*:\s*"[^"]+"',
             r'"name"\s*:\s*"[^"]+"',
             r'"account"\s*:',
+            r'"user"\s*:',
+            r'"profile"\s*:',
+            r'"owner"\s*:',
         ]
         return any(re.search(p, body) for p in patterns)
 
     @staticmethod
     def _generate_poc_script(base_url: str, param_name: str, id_a: int, id_b: int) -> str:
-        return f"""#!/usr/bin/env python3
-\"\"\"IDOR PoC: Access another user's data by incrementing the ID.\"\"\"
-import requests
-
-# Use the full target URL
-base = "{base_url}"
-# Original resource (your own)
-url_a = f"{{base}}/api/users/{id_a}"
-# Another user's resource
-url_b = f"{{base}}/api/users/{id_b}"
-
-resp_a = requests.get(url_a)
-resp_b = requests.get(url_b)
-
-print(f"Your data (status {{resp_a.status_code}}): {{resp_a.text[:200]}}")
-print(f"Other user's data (status {{resp_b.status_code}}): {{resp_b.text[:200]}}")
-# If both return 200 with different content, IDOR is confirmed.
-"""
+        lines = [
+            "#!/usr/bin/env python3",
+            '"""IDOR PoC: Access another user\'s data by incrementing the ID."""',
+            "import requests",
+            "",
+            "base = " + base_url,
+            'url_a = f"{base}/api/users/{id_a}"',
+            'url_b = f"{base}/api/users/{id_b}"',
+            "",
+            "resp_a = requests.get(url_a)",
+            "resp_b = requests.get(url_b)",
+            "",
+            'print(f"Your data (status {resp_a.status_code}): {resp_a.text[:200]}")',
+            'print(f"Other user\'s data (status {resp_b.status_code}): {resp_b.text[:200]}")',
+            "# If both return 200 with different content, IDOR is confirmed.",
+            "",
+        ]
+        return "\n".join(lines)

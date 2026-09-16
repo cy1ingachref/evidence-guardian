@@ -1,7 +1,7 @@
-"""Demo vulnerable app for EvidenceGuardian testing.
+"""Vulnerable Flask app for demo purposes.
 
-This app intentionally contains common vulnerabilities for testing.
-DO NOT deploy this to production or any public server.
+This app intentionally contains common vulnerabilities for testing
+EvidenceGuardian. DO NOT deploy this to production or any public server.
 """
 from flask import Flask, request, redirect, jsonify, make_response
 import sqlite3
@@ -10,15 +10,17 @@ import os
 app = Flask(__name__)
 
 # In-memory SQLite for demo
-DB_PATH = "/tmp/evidence_guardian_demo.db"
+import tempfile
+DB_PATH = os.path.join(tempfile.gettempdir(), "evidence_guardian_demo.db")
 
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT, email TEXT, role TEXT)")
-    conn.execute("INSERT OR IGNORE INTO users VALUES (1, 'alice', 'alice@example.com', 'admin')")
-    conn.execute("INSERT OR IGNORE INTO users VALUES (2, 'bob', 'bob@example.com', 'user')")
-    conn.execute("INSERT OR IGNORE INTO users VALUES (3, 'charlie', 'charlie@example.com', 'user')")
+    conn.execute("DROP TABLE IF EXISTS users")
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, email TEXT, role TEXT, ssn TEXT)")
+    conn.execute("INSERT INTO users VALUES (1, 'alice', 'alice@example.com', 'admin', '123-45-6789')")
+    conn.execute("INSERT INTO users VALUES (2, 'bob', 'bob@example.com', 'user', '987-65-4321')")
+    conn.execute("INSERT INTO users VALUES (3, 'charlie', 'charlie@example.com', 'user', '555-12-3456')")
     conn.commit()
     conn.close()
 
@@ -32,26 +34,42 @@ def index():
 def get_user(user_id):
     """IDOR-vulnerable endpoint: no authorization check on user_id."""
     conn = sqlite3.connect(DB_PATH)
-    user = conn.execute("SELECT id, username, email, role FROM users WHERE id = ?", (user_id,)).fetchone()
+    user = conn.execute("SELECT id, username, email, role, ssn FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
     if user:
-        return jsonify({"id": user[0], "username": user[1], "email": user[2], "role": user[3]})
+        return jsonify({"id": user[0], "username": user[1], "email": user[2], "role": user[3], "ssn": user[4]})
     return jsonify({"error": "User not found"}), 404
 
 
 @app.route("/api/fetch")
 def fetch_url():
-    """SSRF-vulnerable endpoint: fetches user-supplied URL."""
+    """SSRF-vulnerable endpoint: simulates fetching user-supplied URL.
+    
+    For internal addresses, returns simulated AWS metadata.
+    For other URLs, returns a fetch confirmation.
+    """
     import urllib.request
     url = request.args.get("url", "")
     if not url:
         return jsonify({"error": "url parameter required"}), 400
+    
+    # Simulate internal address detection with realistic AWS metadata response
+    if "169.254" in url or "127.0.0.1" in url or "localhost" in url:
+        return jsonify({
+            "accountId": "123456789012",
+            "availabilityZone": "us-east-1a",
+            "imageId": "ami-0abcdef1234567890",
+            "instanceId": "i-0abcdef1234567890a",
+            "instanceType": "t2.micro",
+            "region": "us-east-1"
+        }), 200
+    
+    # External URL — simulate fetch
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "EvidenceGuardian-Demo"})
-        # Only fetch to demonstrate - don't actually expose sensitive data
-        if "169.254" in url or "127.0.0.1" in url or "localhost" in url:
-            return jsonify({"status": "internal_access_simulated", "message": "If this were real, internal metadata would be exposed"}), 200
-        return jsonify({"status": "fetch_attempted", "url": url}), 200
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            content = resp.read()[:500]
+            return jsonify({"status": "fetched", "url": url, "content_preview": content.decode('utf-8', errors='replace')}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -65,21 +83,43 @@ def search():
     return response
 
 
-@app.route("/api/login", methods=["GET"])
+@app.route("/api/login", methods=["GET", "POST"])
 def login():
-    """SQLi-vulnerable endpoint: string concatenation in SQL."""
-    username = request.args.get("username", "")
-    password = request.args.get("password", "")
+    """SQLi-vulnerable endpoint: string concatenation in SQL.
+    
+    Accepts username via query param OR form data.
+    """
+    username = request.args.get("username", "") or request.form.get("username", "")
+    password = request.args.get("password", "") or request.form.get("password", "")
+    user_id = request.args.get("id", "") or request.args.get("user", "") or request.args.get("email", "")
+    
+    # Support SQLi via id parameter too
+    if user_id:
+        try:
+            query = f"SELECT id, username, email, role FROM users WHERE id = {user_id}"
+            conn = sqlite3.connect(DB_PATH)
+            user = conn.execute(query).fetchone()
+            conn.close()
+            if user:
+                return jsonify({"status": "found", "user": {"id": user[0], "username": user[1], "email": user[2], "role": user[3]}})
+            return jsonify({"error": "User not found"}), 404
+        except Exception as e:
+            return jsonify({"error": f"SQL error: {str(e)}"}), 500
+    
+    # Original SQLi via username/password
+    if not username:
+        return jsonify({"error": "username or id parameter required"}), 400
+    
     conn = sqlite3.connect(DB_PATH)
     try:
-        query = f"SELECT * FROM users WHERE username = '{username}' AND password = '{password}'"
+        query = f"SELECT id, username, email, role FROM users WHERE username = '{username}' AND password = '{password}'"
         user = conn.execute(query).fetchone()
     except Exception as e:
         return jsonify({"error": f"SQL error: {str(e)}"}), 500
     finally:
         conn.close()
     if user:
-        return jsonify({"status": "logged_in", "user": user[1]})
+        return jsonify({"status": "logged_in", "user": {"id": user[0], "username": user[1], "email": user[2], "role": user[3]}})
     return jsonify({"error": "Invalid credentials"}), 401
 
 
@@ -97,6 +137,31 @@ def proxy():
     if not url:
         return jsonify({"error": "target parameter required"}), 400
     return jsonify({"proxied": True, "url": url}), 200
+
+
+@app.route("/rest/products/search")
+def product_search():
+    """Juice Shop-style search endpoint (XSS vulnerable)."""
+    q = request.args.get("q", "")
+    return jsonify({"data": [{"name": f"Product matching {q}", "description": f"<p>Results for: {q}</p>"}]})
+
+
+@app.route("/rest/user/login")
+def rest_login():
+    """Juice Shop-style login endpoint (SQLi vulnerable)."""
+    email = request.args.get("email", "") or request.args.get("username", "")
+    password = request.args.get("password", "")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        query = f"SELECT * FROM users WHERE email = '{email}' AND password = '{password}'"
+        user = conn.execute(query).fetchone()
+    except Exception as e:
+        return jsonify({"error": f"SQL error: {str(e)}"}), 500
+    finally:
+        conn.close()
+    if user:
+        return jsonify({"authentication": {"token": "fake-jwt-token", "user": {"id": user[0], "email": user[1]}}})
+    return jsonify({"error": "Invalid email or password"}), 401
 
 
 if __name__ == "__main__":

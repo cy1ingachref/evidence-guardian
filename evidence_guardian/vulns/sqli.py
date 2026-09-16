@@ -4,7 +4,7 @@ Tests input parameters for SQL error messages and time-based blind injection.
 
 Detection strategy:
 1. Get baseline (parameter with benign value)
-2. Send SQLi payloads
+2. Send SQLi payloads via GET, POST (form), and POST (JSON)
 3. Flag only if response differs from baseline AND contains SQL errors
 """
 from __future__ import annotations
@@ -62,28 +62,64 @@ class SQLiModule:
     def run(self, target: ScanTarget) -> list[Finding]:
         findings = []
 
-        params = ["id", "user", "username", "email", "name", "q", "search",
-                  "query", "category", "product", "item"]
-        paths = ["/api/login", "/api/users", "/api/search", "/api/products",
-                 "/api/items", "/search", "/api/v1/login", "/api/v1/users",
-                 "/rest/user/login", "/rest/products/search", "/rest/basket"]
+        # GET-based endpoints (search, query, etc.)
+        get_params = ["q", "search", "query", "id", "user", "username", "email",
+                      "name", "category", "product", "item"]
+        get_paths = ["/api/search", "/api/products/search", "/api/v1/search",
+                     "/rest/products/search", "/rest/user/login", "/search",
+                     "/api/products", "/api/v1/products", "/api/login"]
 
-        for path in paths:
+        for path in get_paths:
             url = f"{target.url.rstrip('/')}{path}"
             if not target.is_in_scope(url):
                 continue
 
-            for param in params:
-                finding = self._test_sqli(target, url, param)
+            for param in get_params:
+                finding = self._test_sqli_get(target, url, param)
                 if finding:
                     findings.append(finding)
                     break
 
+        # POST-based endpoints (login, registration, feedback)
+        post_form_endpoints = [
+            ("/rest/user/login", {"email": "test@test.com", "password": "test"}),
+            ("/api/Users/", {"email": "test@test.com", "password": "test", "passwordRepeat": "test"}),
+            ("/rest/user/reset-password", {"email": "test@test.com"}),
+            ("/api/Products/1", {"review": "test"}),
+        ]
+
+        for path, base_body in post_form_endpoints:
+            url = f"{target.url.rstrip('/')}{path}"
+            if not target.is_in_scope(url):
+                continue
+
+            for field in base_body:
+                finding = self._test_sqli_post_form(target, url, field, base_body)
+                if finding:
+                    findings.append(finding)
+
+        # JSON-based endpoints
+        json_endpoints = [
+            ("/rest/user/login", {"email": "test@test.com", "password": "test"}),
+            ("/rest/basket/1/checkout", {}),
+            ("/api/Baskets/", {"ProductId": 1, "BasketId": 1, "quantity": 1}),
+        ]
+
+        for path, base_body in json_endpoints:
+            url = f"{target.url.rstrip('/')}{path}"
+            if not target.is_in_scope(url):
+                continue
+
+            for field in base_body:
+                finding = self._test_sqli_post_json(target, url, field, base_body)
+                if finding:
+                    findings.append(finding)
+
         return findings
 
-    def _test_sqli(self, target: ScanTarget, url: str, param: str) -> Finding | None:
-        """Test a parameter for SQL injection."""
-        # First, get baseline
+    def _test_sqli_get(self, target: ScanTarget, url: str, param: str) -> Finding | None:
+        """Test a parameter via GET for SQL injection."""
+        # Get baseline
         baseline = self._get(url, {param: "normal_value_123"})
         if baseline is None:
             return None
@@ -93,40 +129,15 @@ class SQLiModule:
             if response is None:
                 continue
 
-            # Check for SQL error messages
-            if self._has_sql_error(response):
-                if self._response_differs(baseline, response):
-                    evidence = Evidence(
-                        finding_id=_next_finding_id("SQLI"),
-                        title=f"SQL Injection via {param} parameter",
-                        description=f"Payload '{payload}' triggered SQL error in {url}.",
-                        request=HttpRequest(method="GET", url=f"{url}?{param}={payload}"),
-                        response=response,
-                        proof_script=self._generate_poc_script(url, param, payload),
-                        metadata={"payload": payload, "method": "error-based"},
-                    )
-                    return Finding(
-                        id=evidence.finding_id,
-                        type=VulnType.SQLI,
-                        severity=Severity.CRITICAL,
-                        endpoint=url,
-                        parameter=param,
-                        summary=f"SQL error triggered by payload in {param} parameter.",
-                        confidence=0.92,
-                        evidence=evidence,
-                    )
-
-            # Check for time-based blind (response is significantly slower)
-            if self._is_time_based(baseline, response):
+            if self._has_sql_error(response) and self._response_differs(baseline, response):
                 evidence = Evidence(
                     finding_id=_next_finding_id("SQLI"),
-                    title=f"Blind SQLi (time-based) via {param}",
-                    description=f"Parameter {param} at {url} shows time-delayed response "
-                                f"when SQL SLEEP/BENCHMARK payload is injected.",
+                    title=f"SQL Injection via GET {param}",
+                    description=f"Payload '{payload}' triggered SQL error in {url} (GET).",
                     request=HttpRequest(method="GET", url=f"{url}?{param}={payload}"),
                     response=response,
-                    proof_script=self._generate_poc_script(url, param, payload),
-                    metadata={"payload": payload, "method": "time-based"},
+                    proof_script=self._generate_get_poc(url, param, payload),
+                    metadata={"payload": payload, "method": "GET", "type": "error-based"},
                 )
                 return Finding(
                     id=evidence.finding_id,
@@ -134,8 +145,82 @@ class SQLiModule:
                     severity=Severity.CRITICAL,
                     endpoint=url,
                     parameter=param,
-                    summary=f"Time-based blind SQL injection via {param} parameter.",
-                    confidence=0.75,
+                    summary=f"SQL error triggered by GET {param} payload.",
+                    confidence=0.92,
+                    evidence=evidence,
+                )
+
+        return None
+
+    def _test_sqli_post_form(self, target: ScanTarget, url: str, field: str, base_body: dict) -> Finding | None:
+        """Test a form field via POST (application/x-www-form-urlencoded) for SQL injection."""
+        # Get baseline
+        baseline = self._post_form(url, base_body)
+        if baseline is None:
+            return None
+
+        for payload in self.PAYLOADS:
+            body = dict(base_body)
+            body[field] = payload
+            response = self._post_form(url, body)
+            if response is None:
+                continue
+
+            if self._has_sql_error(response) and self._response_differs(baseline, response):
+                evidence = Evidence(
+                    finding_id=_next_finding_id("SQLI"),
+                    title=f"SQL Injection via POST form field '{field}'",
+                    description=f"Payload '{payload}' in field '{field}' triggered SQL error in {url}.",
+                    request=HttpRequest(method="POST", url=url, body=f"{field}={payload}"),
+                    response=response,
+                    proof_script=self._generate_post_form_poc(url, field, payload),
+                    metadata={"payload": payload, "method": "POST_FORM", "field": field, "type": "error-based"},
+                )
+                return Finding(
+                    id=evidence.finding_id,
+                    type=VulnType.SQLI,
+                    severity=Severity.CRITICAL,
+                    endpoint=url,
+                    parameter=field,
+                    summary=f"SQL error triggered by POST form field '{field}'.",
+                    confidence=0.92,
+                    evidence=evidence,
+                )
+
+        return None
+
+    def _test_sqli_post_json(self, target: ScanTarget, url: str, field: str, base_body: dict) -> Finding | None:
+        """Test a JSON field via POST for SQL injection."""
+        # Get baseline
+        baseline = self._post_json(url, base_body)
+        if baseline is None:
+            return None
+
+        for payload in self.PAYLOADS:
+            body = dict(base_body)
+            body[field] = payload
+            response = self._post_json(url, body)
+            if response is None:
+                continue
+
+            if self._has_sql_error(response) and self._response_differs(baseline, response):
+                evidence = Evidence(
+                    finding_id=_next_finding_id("SQLI"),
+                    title=f"SQL Injection via POST JSON field '{field}'",
+                    description=f"Payload '{payload}' in JSON field '{field}' triggered SQL error in {url}.",
+                    request=HttpRequest(method="POST", url=url, body=f'{{"{field}": "{payload}"}}'),
+                    response=response,
+                    proof_script=self._generate_post_json_poc(url, field, payload),
+                    metadata={"payload": payload, "method": "POST_JSON", "field": field, "type": "error-based"},
+                )
+                return Finding(
+                    id=evidence.finding_id,
+                    type=VulnType.SQLI,
+                    severity=Severity.CRITICAL,
+                    endpoint=url,
+                    parameter=field,
+                    summary=f"SQL error triggered by POST JSON field '{field}'.",
+                    confidence=0.92,
                     evidence=evidence,
                 )
 
@@ -145,6 +230,34 @@ class SQLiModule:
         try:
             start = time.time()
             resp = self.client.get(url, params=params)
+            elapsed_ms = (time.time() - start) * 1000
+            return HttpResponse(
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                body=resp.text[:3000],
+                response_time_ms=elapsed_ms,
+            )
+        except (httpx.RequestError, httpx.TimeoutException):
+            return None
+
+    def _post_form(self, url: str, data: dict[str, str]) -> HttpResponse | None:
+        try:
+            start = time.time()
+            resp = self.client.post(url, data=data)
+            elapsed_ms = (time.time() - start) * 1000
+            return HttpResponse(
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                body=resp.text[:3000],
+                response_time_ms=elapsed_ms,
+            )
+        except (httpx.RequestError, httpx.TimeoutException):
+            return None
+
+    def _post_json(self, url: str, json_data: dict) -> HttpResponse | None:
+        try:
+            start = time.time()
+            resp = self.client.post(url, json=json_data)
             elapsed_ms = (time.time() - start) * 1000
             return HttpResponse(
                 status_code=resp.status_code,
@@ -180,23 +293,52 @@ class SQLiModule:
         return time_diff > 4000
 
     @staticmethod
-    def _generate_poc_script(url: str, param: str, payload: str) -> str:
+    def _generate_get_poc(url: str, param: str, payload: str) -> str:
         lines = [
             "#!/usr/bin/env python3",
-            '"""SQLi PoC: Test ' + param + ' parameter for SQL injection."""',
+            '"""SQLi PoC: GET ' + param + ' parameter."""',
             "import requests",
             "",
             'url = "' + url + '"',
-            "payloads = [\"'\", '\"', \"' OR '1'='1\", \"1; DROP TABLE test--\"]",
+            'params = {"' + param + '": "' + payload + '"}',
             "",
-            "for p in payloads:",
-            '    response = requests.get(url, params={"' + param + '": p})',
-            '    if any(e in response.text.lower() for e in ["sql", "error", "syntax", "mysql", "oracle"]):',
-            '        print(f"VULNERABLE to SQLi with payload: {p}")',
-            '        print(f"Error in response: {response.text[:300]}")',
-            "        break",
-            "else:",
-            '    print("No SQLi confirmed with basic payloads.")',
+            "response = requests.get(url, params=params)",
+            'print(f"Status: {response.status_code}")',
+            'print(f"Body: {response.text[:500]}")',
+            "",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _generate_post_form_poc(url: str, field: str, payload: str) -> str:
+        lines = [
+            "#!/usr/bin/env python3",
+            '"""SQLi PoC: POST form field ' + field + '."""',
+            "import requests",
+            "",
+            'url = "' + url + '"',
+            'data = {"' + field + '": "' + payload + '"}',
+            "",
+            "response = requests.post(url, data=data)",
+            'print(f"Status: {response.status_code}")',
+            'print(f"Body: {response.text[:500]}")',
+            "",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _generate_post_json_poc(url: str, field: str, payload: str) -> str:
+        lines = [
+            "#!/usr/bin/env python3",
+            '"""SQLi PoC: POST JSON field ' + field + '."""',
+            "import requests",
+            "",
+            'url = "' + url + '"',
+            'json_data = {"' + field + '": "' + payload + '"}',
+            "",
+            "response = requests.post(url, json=json_data)",
+            'print(f"Status: {response.status_code}")',
+            'print(f"Body: {response.text[:500]}")',
             "",
         ]
         return "\n".join(lines)

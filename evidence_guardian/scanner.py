@@ -16,6 +16,8 @@ from .vulns.idor import IDORModule
 from .vulns.xss import XSSModule
 from .vulns.sqli import SQLiModule
 from .vulns.open_redirect import OpenRedirectModule
+from .vulns.sensitive_data import SensitiveDataExposureModule
+from .vulns.misconfiguration import SecurityMisconfigurationModule
 
 console = Console()
 
@@ -29,7 +31,7 @@ class Scanner:
         modules: list[str] | None = None,
     ):
         self.llm = llm or LLMClient()
-        self.modules = modules or ["ssrf", "idor", "xss", "sqli", "open_redirect"]
+        self.modules = modules or ["ssrf", "idor", "xss", "sqli", "open_redirect", "sensitive_data", "misconfiguration"]
 
     def scan(self, target: ScanTarget) -> ScanResult:
         """Run a full scan against the target."""
@@ -54,6 +56,8 @@ class Scanner:
             "xss": XSSModule(client=client),
             "sqli": SQLiModule(client=client),
             "open_redirect": OpenRedirectModule(client=redirect_client),
+            "sensitive_data": SensitiveDataExposureModule(client=client),
+            "misconfiguration": SecurityMisconfigurationModule(client=client),
         }
 
         with Progress(

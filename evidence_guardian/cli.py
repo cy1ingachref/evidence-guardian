@@ -30,7 +30,7 @@ def cli():
 @cli.command()
 @click.argument("url")
 @click.option("--scope", "-s", default="Default scope", help="Scope description for the scan")
-@click.option("--modules", "-m", default="ssrf,idor,xss,sqli,open_redirect",
+@click.option("--modules", "-m", default="ssrf,idor,xss,sqli,open_redirect,sensitive_data,misconfiguration",
               help="Comma-separated list of modules to run")
 @click.option("--output", "-o", default="reports", help="Output directory for reports")
 @click.option("--mock/--no-mock", default=None,
@@ -75,7 +75,9 @@ def scan(url: str, scope: str, modules: str, output: str, mock: bool | None, ope
     console.print(f"[dim]LLM backend: {llm.backend}[/dim]")
 
     # Parse modules
-    module_list = [m.strip() for m in modules.split(",")]
+    module_list = ["ssrf", "idor", "xss", "sqli", "open_redirect", "sensitive_data", "misconfiguration"]
+    if modules:
+        module_list = [m.strip() for m in modules.split(",")]
 
     # Run scan
     scanner = Scanner(llm=llm, modules=module_list)

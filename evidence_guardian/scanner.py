@@ -37,7 +37,11 @@ class Scanner:
         modules: list[str] | None = None,
     ):
         self.llm = llm or LLMClient()
-        self.modules = modules or ["ssrf", "idor", "xss", "sqli", "open_redirect", "sensitive_data", "misconfiguration", "deep_exploit", "auth_scan", "endpoint_discovery"]
+        self.modules = modules or [
+            "ssrf", "idor", "xss", "sqli", "open_redirect",
+            "sensitive_data", "misconfiguration", "deep_exploit",
+            "auth_scan", "endpoint_discovery"
+        ]
 
     def scan(self, target: ScanTarget) -> ScanResult:
         """Run a full scan against the target."""
@@ -51,10 +55,24 @@ class Scanner:
             console.print(f"[red]Target {target.url} is not in scope![/red]")
             result.end_time = time.time()
             return result
-        redirect_client = httpx.Client(timeout=15.0, follow_redirects=False)
-        # All other modules can follow redirects normally
-        client = httpx.Client(timeout=15.0, follow_redirects=True)
 
+        # OpenRedirectModule must NOT follow redirects (it inspects Location header)
+        redirect_client = httpx.Client(timeout=10.0, follow_redirects=False)
+        # All other modules can follow redirects normally
+        client = httpx.Client(timeout=10.0, follow_redirects=True)
+
+        try:
+            return self._scan_with_clients(target, result, client, redirect_client)
+        finally:
+            # Always close clients to free resources
+            client.close()
+            redirect_client.close()
+
+    def _scan_with_clients(
+        self, target: ScanTarget, result: ScanResult,
+        client: httpx.Client, redirect_client: httpx.Client
+    ) -> ScanResult:
+        """Run scan with the given clients."""
         # Initialize all modules
         module_instances = {
             "ssrf": SSRFModule(client=client, llm=self.llm),
@@ -68,6 +86,13 @@ class Scanner:
             "auth_scan": AuthScanModule(client=client),
             "endpoint_discovery": EndpointDiscoveryModule(client=client),
         }
+
+        # Add custom registered modules
+        for name, module_class in get_registered_modules().items():
+            if name not in module_instances:
+                instance = create_module_instance(name, client=client)
+                if instance:
+                    module_instances[name] = instance
 
         with Progress(
             SpinnerColumn(),
@@ -91,7 +116,6 @@ class Scanner:
                         console.print(f"[red]Module {module_name} failed: {e}[/red]")
                 progress.advance(task)
 
-        client.close()
         result.end_time = time.time()
 
         # Run LLM analysis on findings
@@ -170,23 +194,6 @@ Output as JSON: {{"findings": [{{"id": "...", "confidence": 0.9, "remediation": 
             "info": "dim",
         }
 
-        type_colors = {
-            "SSRF": "magenta",
-            "IDOR": "cyan",
-            "XSS": "yellow",
-            "SQLi": "red",
-            "OPEN_REDIRECT": "blue",
-            "INFORMATION_DISCLOSURE": "dim",
-            "SECURITY_MISCONFIGURATION": "blue",
-            "COMMAND_INJECTION": "red bold",
-            "PATH_TRAVERSAL": "red",
-            "FILE_UPLOAD": "yellow",
-            "BUSINESS_LOGIC": "magenta",
-            "BROKEN_AUTHENTICATION": "red bold",
-            "INJECTION": "red",
-            "KNOWN_VULNERABILITY": "red bold",
-        }
-
         for f in result.findings:
             color = severity_colors.get(f.severity.value, "white")
             proven_mark = "[green]✓[/green]" if f.is_proven else "[red]✗[/red]"
@@ -208,7 +215,8 @@ Output as JSON: {{"findings": [{{"id": "...", "confidence": 0.9, "remediation": 
             for f in proven:
                 console.print(f"  [cyan]{f.id}[/cyan]: {f.summary}")
                 if f.evidence:
-                    console.print(f"    Request: {f.evidence.request.method} {f.evidence.request.url}")
+                    if f.evidence.request:
+                        console.print(f"    Request: {f.evidence.request.method} {f.evidence.request.url}")
                     if f.evidence.response:
                         console.print(f"    Response: {f.evidence.response.status_code}")
                     if f.evidence.proof_script:

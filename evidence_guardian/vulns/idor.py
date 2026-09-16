@@ -29,7 +29,12 @@ from ..core import (
 
 
 class IDORModule:
-    """Detect IDOR by testing object references with modified identifiers."""
+    """Detect IDOR by testing object references with modified identifiers.
+    
+    NOTE: This module tests whether different IDs return different data,
+    but without authentication context, it cannot confirm true cross-user
+    access. Results should be manually verified with proper auth tokens.
+    """
 
     name = "idor"
     description = "Insecure Direct Object Reference via identifier manipulation"

@@ -8,7 +8,10 @@ import os
 from datetime import datetime
 from typing import Any
 
-from jinja2 import Template
+from jinja2 import Template, Environment
+
+# Autoescape to prevent stored XSS in reports
+_jinja_env = Environment(autoescape=True)
 
 from .core import Finding, ScanResult
 
@@ -265,7 +268,7 @@ class HTMLReporter:
         """Generate an HTML report and return the file path."""
         os.makedirs(self.output_dir, exist_ok=True)
 
-        template = Template(REPORT_TEMPLATE)
+        template = _jinja_env.from_string(REPORT_TEMPLATE)
 
         # Count severities
         severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}

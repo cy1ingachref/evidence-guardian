@@ -1,13 +1,6 @@
 """XSS (Cross-Site Scripting) detector.
 
 Finds reflected input that reaches the response without proper encoding.
-
-Detection strategy:
-1. Send baseline request (parameter with benign value)
-2. Send request with XSS payload
-3. Only flag if payload appears in response AND response differs from baseline
-
-Tests GET, POST form, and POST JSON.
 """
 from __future__ import annotations
 
@@ -42,35 +35,32 @@ class XSSModule:
     ]
 
     def __init__(self, client: httpx.Client | None = None):
-        self.client = client or httpx.Client(timeout=15.0, follow_redirects=True)
+        self.client = client or httpx.Client(timeout=10.0, follow_redirects=True)
 
     def run(self, target: ScanTarget) -> list[Finding]:
         findings = []
 
-        # GET-based XSS
-        get_params = ["q", "search", "name", "comment", "message", "input",
-                      "keyword", "query", "term", "value", "review", "feedback"]
-        get_paths = ["/search", "/api/search", "/rest/products/search",
-                     "/api/v1/search", "/", "/api/comments", "/api/feedback",
-                     "/contact", "/rest/user/reset-password",
-                     "/api/Baskets/", "/rest/basket/"]
+        params = ["q", "search", "name", "comment", "message", "input",
+                  "keyword", "query", "term", "value", "review", "feedback"]
+        paths = ["/search", "/api/search", "/rest/products/search",
+                 "/api/v1/search", "/", "/api/comments", "/api/feedback",
+                 "/contact", "/api/Baskets/", "/rest/basket/"]
 
-        for path in get_paths:
+        for path in paths:
             url = f"{target.url.rstrip('/')}{path}"
             if not target.is_in_scope(url):
                 continue
 
-            for param in get_params:
+            for param in params:
                 finding = self._test_xss_get(target, url, param)
                 if finding:
                     findings.append(finding)
                     break
 
-        # POST-based XSS (feedback, contact, reviews)
+        # POST-based XSS
         post_endpoints = [
             ("/api/Feedbacks/", {"comment": "test", "rating": 5, "captcha": 0}),
             ("/rest/products/reviews/", {"message": "test", "author": "test"}),
-            ("/api/Complaints/", {"message": "test", "file": ""}),
         ]
 
         for path, base_body in post_endpoints:
@@ -78,7 +68,7 @@ class XSSModule:
             if not target.is_in_scope(url):
                 continue
 
-            for field in ["comment", "message", "review", "feedback", "content", "text"]:
+            for field in ["comment", "message", "review", "feedback"]:
                 if field in base_body:
                     finding = self._test_xss_post_json(target, url, field, base_body)
                     if finding:
@@ -87,7 +77,6 @@ class XSSModule:
         return findings
 
     def _test_xss_get(self, target: ScanTarget, url: str, param: str) -> Finding | None:
-        """Test for GET-based XSS."""
         baseline = self._get(url, {param: "baseline-test-12345"})
         if baseline is None:
             return None
@@ -102,8 +91,7 @@ class XSSModule:
                     evidence = Evidence(
                         finding_id=_next_finding_id("XSS"),
                         title=f"Reflected XSS via GET {param}",
-                        description=f"Parameter {param} at {url} reflects input without "
-                                    f"HTML encoding. Payload: {payload}",
+                        description=f"Parameter {param} at {url} reflects input without encoding. Payload: {repr(payload)}",
                         request=HttpRequest(method="GET", url=f"{url}?{param}={payload}"),
                         response=response,
                         proof_script=self._generate_get_poc(url, param, payload),
@@ -123,7 +111,6 @@ class XSSModule:
         return None
 
     def _test_xss_post_json(self, target: ScanTarget, url: str, field: str, base_body: dict) -> Finding | None:
-        """Test for POST JSON-based XSS."""
         baseline = self._post_json(url, base_body)
         if baseline is None:
             return None
@@ -140,8 +127,7 @@ class XSSModule:
                     evidence = Evidence(
                         finding_id=_next_finding_id("XSS"),
                         title=f"Stored XSS via POST JSON field '{field}'",
-                        description=f"Field '{field}' at {url} stores and reflects input without "
-                                    f"HTML encoding. Payload: {payload}",
+                        description=f"Field '{field}' at {url} stores and reflects input. Payload: {repr(payload)}",
                         request=HttpRequest(method="POST", url=url, body=f'{{"{field}": "{payload}"}}'),
                         response=response,
                         proof_script=self._generate_post_json_poc(url, field, payload),
@@ -190,30 +176,24 @@ class XSSModule:
 
     @staticmethod
     def _response_differs(baseline: HttpResponse, probe: HttpResponse) -> bool:
-        """Check if response differs from baseline."""
         if baseline.status_code != probe.status_code:
             return True
-        
         baseline_len = len(baseline.body)
         probe_len = len(probe.body)
         if baseline_len > 0:
             ratio = abs(probe_len - baseline_len) / baseline_len
             return ratio > 0.05
-        
         return probe_len > 0
 
     @staticmethod
     def _is_safe_context(body: str, payload: str) -> bool:
-        """Check if the payload reflection is inside a safe HTML context."""
         idx = body.find(payload)
         if idx == -1:
             return True
-
         before = body[:idx]
         in_textarea = before.rfind("<textarea") > before.rfind("</textarea>")
         in_pre = before.rfind("<pre") > before.rfind("</pre>")
         in_code = before.rfind("<code") > before.rfind("</code>")
-
         return in_textarea or in_pre or in_code
 
     @staticmethod
@@ -222,10 +202,11 @@ class XSSModule:
             "#!/usr/bin/env python3",
             '"""XSS PoC: GET ' + param + ' parameter."""',
             "import requests",
-            'from urllib.parse import quote',
+            "from urllib.parse import quote",
             "",
-            'payload = "' + payload + '"',
-            'url = "' + url + '?' + param + '=" + quote(payload)',
+            "url = " + repr(url),
+            "payload = " + repr(payload),
+            'url = f"{url}?{param}=" + quote(payload)',
             "",
             "response = requests.get(url)",
             'if payload in response.text:',
@@ -244,11 +225,11 @@ class XSSModule:
             '"""XSS PoC: POST JSON field ' + field + '."""',
             "import requests",
             "",
-            'url = "' + url + '"',
-            'json_data = {"' + field + '": "' + payload + '"}',
+            "url = " + repr(url),
+            "json_data = " + repr({field: payload}),
             "",
             "response = requests.post(url, json=json_data)",
-            'if "' + payload + '" in response.text:',
+            'if ' + repr(payload) + ' in response.text:',
             '    print("CONFIRMED: Payload stored and reflected")',
             '    print(f"Response: {response.text[:300]}")',
             'else:',

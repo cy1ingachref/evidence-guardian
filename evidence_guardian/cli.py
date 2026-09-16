@@ -13,6 +13,7 @@ from .core import ScanTarget
 from .llm import LLMClient
 from .scanner import Scanner
 from .reporter import HTMLReporter
+from .webhook import WebhookNotifier
 
 console = Console()
 
@@ -157,8 +158,8 @@ def demo():
     console.print("[dim]Starting demo server...[/dim]")
     proc = subprocess.Popen(
         [sys.executable, demo_script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     # Wait for server to start

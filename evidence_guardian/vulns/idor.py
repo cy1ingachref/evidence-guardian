@@ -167,7 +167,7 @@ class IDORModule:
             '"""IDOR PoC: Access another user\'s data by incrementing the ID."""',
             "import requests",
             "",
-            "base = " + base_url,
+            "base = " + repr(base_url),
             'url_a = f"{base}/api/users/{id_a}"',
             'url_b = f"{base}/api/users/{id_b}"',
             "",

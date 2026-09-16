@@ -52,15 +52,36 @@ def fetch_url():
     if not url:
         return jsonify({"error": "url parameter required"}), 400
 
-    # Simulate internal address detection with realistic AWS metadata response
-    if "169.254" in url or "127.0.0.1" in url or "localhost" in url:
+    # Parse URL properly to prevent bypasses
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        # Check for internal addresses using proper hostname extraction
+        is_internal = (
+            hostname in ["127.0.0.1", "localhost", "::1", "0.0.0.0"]
+            or hostname.startswith("169.254.")  # AWS metadata
+            or hostname.startswith("10.")  # Private range
+            or hostname.startswith("192.168.")  # Private range
+            or hostname.startswith("172.16.")  # Private range
+        )
+    except Exception:
+        is_internal = False
+
+    if is_internal:
         return jsonify({
             "accountId": "123456789012",
+            "architecture": "x86_64",
             "availabilityZone": "us-east-1a",
+            "billingProducts": None,
+            "devpayProductCodes": None,
             "imageId": "ami-0abcdef1234567890",
             "instanceId": "i-0abcdef1234567890a",
             "instanceType": "t2.micro",
-            "region": "us-east-1"
+            "kernelId": None,
+            "pendingTime": "2024-01-15T12:00:00Z",
+            "privateIp": "10.0.1.5",
+            "region": "us-east-1",
+            "version": "2017-09-30"
         }), 200
 
     # External URL — make actual request with timeout to prevent hangs

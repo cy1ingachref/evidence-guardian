@@ -1,16 +1,12 @@
 """SQLi (SQL Injection) detector.
 
 Tests input parameters for SQL error messages and time-based blind injection.
-
-Detection strategy:
-1. Get baseline (parameter with benign value)
-2. Send SQLi payloads via GET, POST (form), and POST (JSON)
-3. Flag only if response differs from baseline AND contains SQL errors
 """
 from __future__ import annotations
 
 import re
 import time
+import shlex
 from typing import Any
 
 import httpx
@@ -27,6 +23,17 @@ from ..core import (
 )
 
 
+def _py_str(value: str) -> str:
+    """Safely quote a string for Python source code."""
+    return repr(value)
+
+
+def _py_dict(d: dict) -> str:
+    """Safely format a dict for Python source code."""
+    items = ", ".join(f"{repr(k)}: {repr(v)}" for k, v in d.items())
+    return "{" + items + "}"
+
+
 class SQLiModule:
     """Detect SQL injection via error-based and time-based techniques."""
 
@@ -40,10 +47,10 @@ class SQLiModule:
         r"ora-[0-9]{4,5}",
         r"postgresql.*error",
         r"sqlite.*error",
-        r"sql error.*(syntax|near|no such column|unterminated)",
+        r"sql error.*(syntax|near|no such column|unterminated|unrecognized token)",
+        r"unrecognized token",
         r"microsoft sql server",
         r"odbc sql server driver",
-        r"unterminated quoted string",
         r"you have an error in your sql syntax",
         r"syntax error.*(sql|query|database)",
     ]
@@ -57,12 +64,12 @@ class SQLiModule:
     ]
 
     def __init__(self, client: httpx.Client | None = None):
-        self.client = client or httpx.Client(timeout=15.0, follow_redirects=True)
+        self.client = client or httpx.Client(timeout=10.0, follow_redirects=True)
 
     def run(self, target: ScanTarget) -> list[Finding]:
         findings = []
 
-        # GET-based endpoints (search, query, etc.)
+        # GET-based endpoints
         get_params = ["q", "search", "query", "id", "user", "username", "email",
                       "name", "category", "product", "item"]
         get_paths = ["/api/search", "/api/products/search", "/api/v1/search",
@@ -80,12 +87,11 @@ class SQLiModule:
                     findings.append(finding)
                     break
 
-        # POST-based endpoints (login, registration, feedback)
+        # POST-based endpoints
         post_form_endpoints = [
             ("/rest/user/login", {"email": "test@test.com", "password": "test"}),
             ("/api/Users/", {"email": "test@test.com", "password": "test", "passwordRepeat": "test"}),
             ("/rest/user/reset-password", {"email": "test@test.com"}),
-            ("/api/Products/1", {"review": "test"}),
         ]
 
         for path, base_body in post_form_endpoints:
@@ -101,7 +107,6 @@ class SQLiModule:
         # JSON-based endpoints
         json_endpoints = [
             ("/rest/user/login", {"email": "test@test.com", "password": "test"}),
-            ("/rest/basket/1/checkout", {}),
             ("/api/Baskets/", {"ProductId": 1, "BasketId": 1, "quantity": 1}),
         ]
 
@@ -119,7 +124,6 @@ class SQLiModule:
 
     def _test_sqli_get(self, target: ScanTarget, url: str, param: str) -> Finding | None:
         """Test a parameter via GET for SQL injection."""
-        # Get baseline
         baseline = self._get(url, {param: "normal_value_123"})
         if baseline is None:
             return None
@@ -133,7 +137,7 @@ class SQLiModule:
                 evidence = Evidence(
                     finding_id=_next_finding_id("SQLI"),
                     title=f"SQL Injection via GET {param}",
-                    description=f"Payload '{payload}' triggered SQL error in {url} (GET).",
+                    description=f"Payload {repr(payload)} triggered SQL error in {url} (GET).",
                     request=HttpRequest(method="GET", url=f"{url}?{param}={payload}"),
                     response=response,
                     proof_script=self._generate_get_poc(url, param, payload),
@@ -153,8 +157,7 @@ class SQLiModule:
         return None
 
     def _test_sqli_post_form(self, target: ScanTarget, url: str, field: str, base_body: dict) -> Finding | None:
-        """Test a form field via POST (application/x-www-form-urlencoded) for SQL injection."""
-        # Get baseline
+        """Test a form field via POST for SQL injection."""
         baseline = self._post_form(url, base_body)
         if baseline is None:
             return None
@@ -170,7 +173,7 @@ class SQLiModule:
                 evidence = Evidence(
                     finding_id=_next_finding_id("SQLI"),
                     title=f"SQL Injection via POST form field '{field}'",
-                    description=f"Payload '{payload}' in field '{field}' triggered SQL error in {url}.",
+                    description=f"Payload {repr(payload)} in field '{field}' triggered SQL error in {url}.",
                     request=HttpRequest(method="POST", url=url, body=f"{field}={payload}"),
                     response=response,
                     proof_script=self._generate_post_form_poc(url, field, payload),
@@ -191,7 +194,6 @@ class SQLiModule:
 
     def _test_sqli_post_json(self, target: ScanTarget, url: str, field: str, base_body: dict) -> Finding | None:
         """Test a JSON field via POST for SQL injection."""
-        # Get baseline
         baseline = self._post_json(url, base_body)
         if baseline is None:
             return None
@@ -207,7 +209,7 @@ class SQLiModule:
                 evidence = Evidence(
                     finding_id=_next_finding_id("SQLI"),
                     title=f"SQL Injection via POST JSON field '{field}'",
-                    description=f"Payload '{payload}' in JSON field '{field}' triggered SQL error in {url}.",
+                    description=f"Payload {repr(payload)} in JSON field '{field}' triggered SQL error in {url}.",
                     request=HttpRequest(method="POST", url=url, body=f'{{"{field}": "{payload}"}}'),
                     response=response,
                     proof_script=self._generate_post_json_poc(url, field, payload),
@@ -274,23 +276,16 @@ class SQLiModule:
 
     @staticmethod
     def _response_differs(baseline: HttpResponse, probe: HttpResponse) -> bool:
-        """Check if response differs from baseline."""
         if baseline.status_code != probe.status_code:
             return True
-        
+
         baseline_len = len(baseline.body)
         probe_len = len(probe.body)
         if baseline_len > 0:
             ratio = abs(probe_len - baseline_len) / baseline_len
             return ratio > 0.1
-        
-        return probe_len > 0
 
-    @staticmethod
-    def _is_time_based(baseline: HttpResponse, payload_response: HttpResponse) -> bool:
-        """Check if payload caused a significant time delay."""
-        time_diff = payload_response.response_time_ms - baseline.response_time_ms
-        return time_diff > 4000
+        return probe_len > 0
 
     @staticmethod
     def _generate_get_poc(url: str, param: str, payload: str) -> str:
@@ -299,8 +294,8 @@ class SQLiModule:
             '"""SQLi PoC: GET ' + param + ' parameter."""',
             "import requests",
             "",
-            'url = "' + url + '"',
-            'params = {"' + param + '": "' + payload + '"}',
+            "url = " + repr(url),
+            "params = " + repr({param: payload}),
             "",
             "response = requests.get(url, params=params)",
             'print(f"Status: {response.status_code}")',
@@ -316,8 +311,8 @@ class SQLiModule:
             '"""SQLi PoC: POST form field ' + field + '."""',
             "import requests",
             "",
-            'url = "' + url + '"',
-            'data = {"' + field + '": "' + payload + '"}',
+            "url = " + repr(url),
+            "data = " + repr({field: payload}),
             "",
             "response = requests.post(url, data=data)",
             'print(f"Status: {response.status_code}")',
@@ -333,8 +328,8 @@ class SQLiModule:
             '"""SQLi PoC: POST JSON field ' + field + '."""',
             "import requests",
             "",
-            'url = "' + url + '"',
-            'json_data = {"' + field + '": "' + payload + '"}',
+            "url = " + repr(url),
+            "json_data = " + repr({field: payload}),
             "",
             "response = requests.post(url, json=json_data)",
             'print(f"Status: {response.status_code}")',

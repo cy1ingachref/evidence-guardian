@@ -30,8 +30,8 @@ def demo_server():
     demo_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "demo", "vulnerable_app.py")
     proc = subprocess.Popen(
         [sys.executable, demo_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     # Wait for server
     for _ in range(30):

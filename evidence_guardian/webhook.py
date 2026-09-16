@@ -13,7 +13,7 @@ class WebhookNotifier:
     """Send scan results to configured webhooks."""
 
     def __init__(self, webhook_urls: list[str] | None = None):
-        self.webhook_urls = webhook_urls or []
+        self.webhook_urls = list(webhook_urls) if webhook_urls else []  # Don't mutate caller's list
         # Support env var for CI/CD
         env_webhooks = os.environ.get("EVIDENCE_GUARDIAN_WEBHOOKS", "")
         if env_webhooks:
@@ -86,20 +86,12 @@ class WebhookNotifier:
 
     def _format_slack(self, payload: dict) -> dict[str, Any]:
         """Format payload for Slack incoming webhook."""
-        severity_emoji = {
-            "critical": "",
-            "high": "",
-            "medium": "",
-            "low": "",
-            "info": "",
-        }
-
         blocks = [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f" EvidenceGuardian Scan Complete",
+                    "text": " EvidenceGuardian Scan Complete",
                 }
             },
             {

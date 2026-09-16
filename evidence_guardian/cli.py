@@ -30,7 +30,7 @@ def cli():
 @cli.command()
 @click.argument("url")
 @click.option("--scope", "-s", default="Default scope", help="Scope description for the scan")
-@click.option("--modules", "-m", default="ssrf,idor,xss,sqli,open_redirect,sensitive_data,misconfiguration",
+@click.option("--modules", "-m", default="ssrf,idor,xss,sqli,open_redirect,sensitive_data,misconfiguration,deep_exploit",
               help="Comma-separated list of modules to run")
 @click.option("--output", "-o", default="reports", help="Output directory for reports")
 @click.option("--mock/--no-mock", default=None,

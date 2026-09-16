@@ -18,6 +18,7 @@ from .vulns.sqli import SQLiModule
 from .vulns.open_redirect import OpenRedirectModule
 from .vulns.sensitive_data import SensitiveDataExposureModule
 from .vulns.misconfiguration import SecurityMisconfigurationModule
+from .vulns.deep_exploit import DeepExploitModule
 
 console = Console()
 
@@ -31,7 +32,7 @@ class Scanner:
         modules: list[str] | None = None,
     ):
         self.llm = llm or LLMClient()
-        self.modules = modules or ["ssrf", "idor", "xss", "sqli", "open_redirect", "sensitive_data", "misconfiguration"]
+        self.modules = modules or ["ssrf", "idor", "xss", "sqli", "open_redirect", "sensitive_data", "misconfiguration", "deep_exploit"]
 
     def scan(self, target: ScanTarget) -> ScanResult:
         """Run a full scan against the target."""
@@ -58,6 +59,7 @@ class Scanner:
             "open_redirect": OpenRedirectModule(client=redirect_client),
             "sensitive_data": SensitiveDataExposureModule(client=client),
             "misconfiguration": SecurityMisconfigurationModule(client=client),
+            "deep_exploit": DeepExploitModule(client=client),
         }
 
         with Progress(
@@ -159,6 +161,23 @@ Output as JSON: {{"findings": [{{"id": "...", "confidence": 0.9, "remediation": 
             "medium": "yellow",
             "low": "blue",
             "info": "dim",
+        }
+
+        type_colors = {
+            "SSRF": "magenta",
+            "IDOR": "cyan",
+            "XSS": "yellow",
+            "SQLi": "red",
+            "OPEN_REDIRECT": "blue",
+            "INFORMATION_DISCLOSURE": "dim",
+            "SECURITY_MISCONFIGURATION": "blue",
+            "COMMAND_INJECTION": "red bold",
+            "PATH_TRAVERSAL": "red",
+            "FILE_UPLOAD": "yellow",
+            "BUSINESS_LOGIC": "magenta",
+            "BROKEN_AUTHENTICATION": "red bold",
+            "INJECTION": "red",
+            "KNOWN_VULNERABILITY": "red bold",
         }
 
         for f in result.findings:

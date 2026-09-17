@@ -7,7 +7,6 @@
 [![Tests](https://img.shields.io/badge/tests-17%20passed-brightgreen)](https://github.com/cy1ingachref/evidence-guardian)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/cy1ingachref/evidence-guardian/blob/main/LICENSE)
-[![LLM](https://img.shields.io/badge/LLM-hy3%3Afree-orange)](https://portal.nousresearch.com/)
 
 *Point it at a web app. It finds potential issues using AI, then autonomously generates working proofs — actual HTTP request/response pairs, PoC scripts, and self-contained evidence bundles.*
 

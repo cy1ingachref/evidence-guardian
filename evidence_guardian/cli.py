@@ -43,8 +43,10 @@ def cli():
 @click.option("--omni/--no-omni", default=False,
               help="Use OmniRouter for free multi-provider AI routing")
 @click.option("--provider", "-p", default=None,
-              help="Preferred AI provider (ollama, groq, nous, together, openrouter, deepinfra)")
-def scan(url: str, scope: str, modules: str, webhooks: str | None, output: str, mock: bool | None, open_report: bool, omni: bool, provider: str | None):
+              help="Preferred AI provider (ollama, groq, nous, together, openrouter, fireworks, mistral, deepinfra, hf)")
+@click.option("--model", "-M", default=None,
+              help="Specific model to use (provider-specific)")
+def scan(url: str, scope: str, modules: str, webhooks: str | None, output: str, mock: bool | None, open_report: bool, omni: bool, provider: str | None, model: str | None):
     """Run a security scan against a target URL.
 
     Example:
@@ -84,9 +86,11 @@ def scan(url: str, scope: str, modules: str, webhooks: str | None, output: str, 
         available = list_available_providers()
         if available:
             console.print(f"[dim]OmniRouter enabled. Available providers: {', '.join(available)}[/dim]")
+            if model:
+                console.print(f"[dim]Using model: {model}[/dim]")
         else:
             console.print("[yellow]OmniRouter: no providers found, using mock mode[/yellow]")
-        llm = LLMClient(mock=mock, provider=provider)
+        llm = LLMClient(mock=mock, provider=provider, model=model)
     else:
         llm = LLMClient(mock=mock)
     console.print(f"[dim]LLM backend: {llm.backend}[/dim]")
@@ -257,33 +261,54 @@ def omni(provider: str | None):
         evidence-guardian omni groq         # test Groq specifically
         evidence-guardian omni ollama       # test local Ollama
     """
-    from .omni import OmniRouter, list_available_providers, reset_router
+    from .omni import OmniRouter, list_available_providers, list_all_providers, list_free_models, reset_router
     reset_router()
 
     available = list_available_providers()
+    all_providers = list_all_providers()
+
+    # Build provider table
+    provider_lines = []
+    for p in all_providers:
+        status = "[green]✓[/green]" if p["available"] else "[dim]✗[/dim]"
+        key_status = f"[cyan]{p['env']}[/cyan]" if p["key_needed"] else "[dim]no key[/dim]"
+        provider_lines.append(f"  {status} {p['name']:<16} {key_status:<24} {p['desc']}")
+
     console.print(Panel(
         "[bold]OmniRouter — Free AI Provider Router[/bold]\n\n"
         "Routes LLM requests across multiple free providers with automatic failover.\n"
         "No paid APIs required.\n\n"
         f"Available providers: [cyan]{', '.join(available) if available else 'None detected'}[/cyan]\n\n"
-        "Setup:\n"
-        "  Ollama:      ollama run llama3.3  (local, free)\n"
-        "  Groq:        export GROQ_API_KEY=your_key\n"
-        "  Nous Portal: export NOUS_API_KEY=your_key\n"
-        "  Together:    export TOGETHER_API_KEY=your_key\n"
-        "  OpenRouter:  export OPENROUTER_API_KEY=your_key\n",
+        "[bold]Provider Setup:[/bold]\n" +
+        "\n".join(provider_lines) +
+        "\n\n[dim]Get free keys at:\n"
+        "  Groq:        https://console.groq.com/keys\n"
+        "  Nous Portal: https://portal.nousresearch.com\n"
+        "  Together:    https://api.together.xyz/settings/api-keys\n"
+        "  OpenRouter:  https://openrouter.ai/keys\n"
+        "  Fireworks:   https://fireworks.ai/api-keys\n"
+        "  Mistral:     https://console.mistral.ai/api-keys\n"
+        "  DeepInfra:   https://deepinfra.com/dash/api_keys\n"
+        "  HuggingFace: https://huggingface.co/settings/tokens[/dim]",
         title="OmniRouter",
         border_style="green",
     ))
 
     if provider:
+        models = list_free_models(provider)
         router = OmniRouter(preferred_provider=provider)
         if router.has_providers:
             console.print(f"[green]Provider '{provider}' is available![/green]")
             if router.current_provider:
                 console.print(f"  Name: {router.current_provider.name}")
+            if models:
+                console.print(f"  [bold]Free models:[/bold] {', '.join(models[:5])}")
+                if len(models) > 5:
+                    console.print(f"  [dim]...and {len(models) - 5} more[/dim]")
         else:
             console.print(f"[red]Provider '{provider}' is not available.[/red]")
+            if models:
+                console.print(f"  [dim]Available free models: {', '.join(models[:5])}[/dim]")
 
     console.print("\n[dim]Use --omni flag with scan command to enable free AI routing.[/dim]")
 

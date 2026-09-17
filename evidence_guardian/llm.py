@@ -23,16 +23,17 @@ NOUS_API_URL = "https://portal.nousresearch.com/api/v1/chat/completions"
 class LLMClient:
     """LLM client with OmniRouter for free multi-provider routing."""
 
-    def __init__(self, *, mock: bool | None = None, provider: str | None = None):
+    def __init__(self, *, mock: bool | None = None, provider: str | None = None, model: str | None = None):
         self.api_key = os.environ.get("NOUS_API_KEY", "")
         self.provider = provider
+        self.model = model
 
         # Determine if we should use mock mode
         if mock is not None:
             self.mock_mode = mock
         else:
             # Check if any provider is available
-            router = get_router(preferred_provider=provider)
+            router = get_router(preferred_provider=provider, model=model)
             self.mock_mode = not router.has_providers and not self.api_key
 
     @property

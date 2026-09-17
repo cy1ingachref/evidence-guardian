@@ -40,7 +40,11 @@ def cli():
               help="Force mock LLM mode (no API key needed)")
 @click.option("--open/--no-open", "open_report", default=False,
               help="Open the HTML report after scan")
-def scan(url: str, scope: str, modules: str, webhooks: str | None, output: str, mock: bool | None, open_report: bool):
+@click.option("--omni/--no-omni", default=False,
+              help="Use OmniRouter for free multi-provider AI routing")
+@click.option("--provider", "-p", default=None,
+              help="Preferred AI provider (ollama, groq, nous, together, openrouter, deepinfra)")
+def scan(url: str, scope: str, modules: str, webhooks: str | None, output: str, mock: bool | None, open_report: bool, omni: bool, provider: str | None):
     """Run a security scan against a target URL.
 
     Example:
@@ -74,7 +78,17 @@ def scan(url: str, scope: str, modules: str, webhooks: str | None, output: str, 
             sys.exit(1)
 
     # Initialize LLM
-    llm = LLMClient(mock=mock)
+    if omni:
+        from .omni import list_available_providers, reset_router
+        reset_router()  # Force re-initialization
+        available = list_available_providers()
+        if available:
+            console.print(f"[dim]OmniRouter enabled. Available providers: {', '.join(available)}[/dim]")
+        else:
+            console.print("[yellow]OmniRouter: no providers found, using mock mode[/yellow]")
+        llm = LLMClient(mock=mock, provider=provider)
+    else:
+        llm = LLMClient(mock=mock)
     console.print(f"[dim]LLM backend: {llm.backend}[/dim]")
 
     # Parse modules
@@ -195,19 +209,83 @@ def demo():
 def info():
     """Show information about the current configuration."""
     llm = LLMClient()
+    lines = [
+        f"[bold]EvidenceGuardian v0.1.0[/bold]\n",
+        f"LLM Backend: [cyan]{llm.backend}[/cyan]",
+        f"API Key Set: {'[green]Yes[/green]' if llm.api_key else '[yellow]No (using mock mode)[/yellow]'}",
+    ]
+
+    # Show OmniRouter providers
+    from .omni import list_available_providers
+    omni_providers = list_available_providers()
+    if omni_providers:
+        lines.append(f"OmniRouter Providers: [cyan]{', '.join(omni_providers)}[/cyan]")
+    else:
+        lines.append("OmniRouter Providers: [yellow]None detected[/yellow]")
+
+    lines.extend([
+        "",
+        "Available modules:",
+        "  • ssrf — Server-Side Request Forgery",
+        "  • idor — Insecure Direct Object Reference",
+        "  • xss — Cross-Site Scripting",
+        "  • sqli — SQL Injection",
+        "  • open_redirect — Open Redirect",
+        "  • sensitive_data — Sensitive Data Exposure",
+        "  • misconfiguration — Security Misconfiguration",
+        "  • deep_exploit — Advanced Exploit Discovery",
+        "  • auth_scan — Authentication Security",
+        "  • endpoint_discovery — API Endpoint Discovery",
+    ])
+
     console.print(Panel(
-        f"[bold]EvidenceGuardian v0.1.0[/bold]\n\n"
-        f"LLM Backend: [cyan]{llm.backend}[/cyan]\n"
-        f"API Key Set: {'[green]Yes[/green]' if llm.api_key else '[yellow]No (using mock mode)[/yellow]'}\n\n"
-        f"Available modules:\n"
-        f"  • ssrf — Server-Side Request Forgery\n"
-        f"  • idor — Insecure Direct Object Reference\n"
-        f"  • xss — Cross-Site Scripting\n"
-        f"  • sqli — SQL Injection\n"
-        f"  • open_redirect — Open Redirect\n",
+        "\n".join(lines),
         title="Configuration",
         border_style="cyan",
     ))
+
+
+@cli.command()
+@click.argument("provider", required=False)
+def omni(provider: str | None):
+    """Show OmniRouter status and available free AI providers.
+
+    Optionally test a specific provider by name.
+    
+    Examples:
+        evidence-guardian omni              # list available providers
+        evidence-guardian omni groq         # test Groq specifically
+        evidence-guardian omni ollama       # test local Ollama
+    """
+    from .omni import OmniRouter, list_available_providers, reset_router
+    reset_router()
+
+    available = list_available_providers()
+    console.print(Panel(
+        "[bold]OmniRouter — Free AI Provider Router[/bold]\n\n"
+        "Routes LLM requests across multiple free providers with automatic failover.\n"
+        "No paid APIs required.\n\n"
+        f"Available providers: [cyan]{', '.join(available) if available else 'None detected'}[/cyan]\n\n"
+        "Setup:\n"
+        "  Ollama:      ollama run llama3.3  (local, free)\n"
+        "  Groq:        export GROQ_API_KEY=your_key\n"
+        "  Nous Portal: export NOUS_API_KEY=your_key\n"
+        "  Together:    export TOGETHER_API_KEY=your_key\n"
+        "  OpenRouter:  export OPENROUTER_API_KEY=your_key\n",
+        title="OmniRouter",
+        border_style="green",
+    ))
+
+    if provider:
+        router = OmniRouter(preferred_provider=provider)
+        if router.has_providers:
+            console.print(f"[green]Provider '{provider}' is available![/green]")
+            if router.current_provider:
+                console.print(f"  Name: {router.current_provider.name}")
+        else:
+            console.print(f"[red]Provider '{provider}' is not available.[/red]")
+
+    console.print("\n[dim]Use --omni flag with scan command to enable free AI routing.[/dim]")
 
 
 if __name__ == "__main__":

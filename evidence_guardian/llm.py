@@ -1,7 +1,7 @@
 """LLM client for EvidenceGuardian.
 
-Uses Nous Portal's hy3:free model when NOUS_API_KEY is set.
-Falls back to deterministic mock mode for testing/demos (no API key needed).
+Uses OmniRouter for free multi-provider AI routing.
+Falls back to deterministic mock mode for testing/demos.
 """
 from __future__ import annotations
 
@@ -13,31 +13,58 @@ from typing import Any
 import requests
 from rich.console import Console
 
+from .omni import get_router, reset_router
+
 console = Console()
 
 NOUS_API_URL = "https://portal.nousresearch.com/api/v1/chat/completions"
 
 
 class LLMClient:
-    """Thin wrapper around the LLM. Free hy3:free via Nous Portal, or mock mode."""
+    """LLM client with OmniRouter for free multi-provider routing."""
 
-    def __init__(self, *, mock: bool | None = None):
+    def __init__(self, *, mock: bool | None = None, provider: str | None = None):
         self.api_key = os.environ.get("NOUS_API_KEY", "")
-        self.mock_mode = mock if mock is not None else not bool(self.api_key)
+        self.provider = provider
+
+        # Determine if we should use mock mode
+        if mock is not None:
+            self.mock_mode = mock
+        else:
+            # Check if any provider is available
+            router = get_router(preferred_provider=provider)
+            self.mock_mode = not router.has_providers and not self.api_key
 
     @property
     def backend(self) -> str:
-        return "mock-deterministic" if self.mock_mode else "nous/hy3:free"
+        if self.mock_mode:
+            return "mock-deterministic"
+        router = get_router()
+        provider = router.current_provider
+        return provider.name if provider else "unknown"
 
     def analyze(self, prompt: str, *, system: str | None = None) -> str:
         """Send a prompt and return the LLM's text response."""
         if self.mock_mode:
             return self._mock_analyze(prompt, system)
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        # Try OmniRouter first (free providers)
+        router = get_router(preferred_provider=self.provider)
+        if router.has_providers:
+            try:
+                return router.analyze(prompt, system=system)
+            except Exception:
+                pass  # Fall through to mock
+
+        # Fall back to direct Nous Portal
+        if self.api_key:
+            return self._nous_analyze(prompt, system)
+
+        # Fall back to mock
+        return self._mock_analyze(prompt, system)
+
+    def _nous_analyze(self, prompt: str, system: str | None) -> str:
+        """Direct Nous Portal call."""
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -49,28 +76,27 @@ class LLMClient:
             "temperature": 0.2,
         }
 
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
         try:
             resp = requests.post(NOUS_API_URL, headers=headers, json=payload, timeout=60)
             resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            return resp.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            console.print(f"[yellow]LLM call failed ({e}), falling back to mock mode[/yellow]")
+            console.print(f"[yellow]LLM call failed ({e}), falling back to mock[/yellow]")
             return self._mock_analyze(prompt, system)
 
     # ---- mock mode (deterministic, reproducible) ------------------------
 
     def _mock_analyze(self, prompt: str, system: str | None) -> str:
-        """Deterministic mock that produces plausible security analysis output.
-        
-        This allows the framework to work without any API key for demos
-        and CI testing. Output is predictable per-input.
-        """
+        """Deterministic mock that produces plausible security analysis output."""
         prompt_lower = prompt.lower()
         findings = []
 
-        # SSRF indicators
-        if any(k in prompt_lower for k in ["ssrf", "url parameter", "fetch_url", "webhook", "callback"]):
+        if any(k in prompt_lower for k in ["ssrf", "url parameter", "fetch_url", "webhook"]):
             findings.append({
                 "id": "EG-SSRF-001",
                 "type": "SSRF",
@@ -82,7 +108,6 @@ class LLMClient:
                 "confidence": 0.85,
             })
 
-        # IDOR indicators
         if any(k in prompt_lower for k in ["idor", "user id", "account", "profile", "order"]):
             findings.append({
                 "id": "EG-IDOR-001",
@@ -91,11 +116,10 @@ class LLMClient:
                 "endpoint": self._extract_url(prompt) or "/api/users/123",
                 "parameter": "user_id",
                 "summary": "Numeric user identifier can be incremented to access other users' data",
-                "evidence": "Request for user_id=124 returned data belonging to another user (different email)",
+                "evidence": "Request for user_id=124 returned data belonging to a different user",
                 "confidence": 0.92,
             })
 
-        # XSS indicators
         if any(k in prompt_lower for k in ["xss", "reflect", "search", "comment", "name"]):
             findings.append({
                 "id": "EG-XSS-001",
@@ -108,7 +132,6 @@ class LLMClient:
                 "confidence": 0.78,
             })
 
-        # SQLi indicators
         if any(k in prompt_lower for k in ["sqli", "sql", "query", "search", "login"]):
             findings.append({
                 "id": "EG-SQLI-001",
@@ -121,7 +144,6 @@ class LLMClient:
                 "confidence": 0.88,
             })
 
-        # Open Redirect indicators
         if any(k in prompt_lower for k in ["redirect", "url", "next", "return", "callback"]):
             findings.append({
                 "id": "EG-REDIR-001",
@@ -155,15 +177,11 @@ class LLMClient:
 
     @staticmethod
     def parse_findings(raw: str) -> list[dict[str, Any]]:
-        """Parse LLM output into a list of finding dicts.
-        
-        Tolerant of: pure JSON, JSON inside markdown code blocks,
-        or JSON with trailing prose.
-        """
+        """Parse LLM output into a list of finding dicts."""
         if not raw:
             return []
 
-        # Try direct JSON parse first
+        # Try direct JSON parse
         try:
             data = json.loads(raw)
             if isinstance(data, dict):
@@ -173,7 +191,7 @@ class LLMClient:
         except json.JSONDecodeError:
             pass
 
-        # Try to extract JSON from markdown code block
+        # Try JSON from code block
         block = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
         if block:
             try:
@@ -185,7 +203,7 @@ class LLMClient:
             except json.JSONDecodeError:
                 pass
 
-        # Try to find first JSON object/array in the text
+        # Try first JSON object/array
         for match in re.finditer(r"(\{[\s\S]*\}|\[[\s\S]*\])", raw):
             try:
                 data = json.loads(match.group(0))
